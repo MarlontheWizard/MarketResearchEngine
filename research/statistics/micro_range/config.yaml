@@ -1,0 +1,22 @@
+
+events:   #controls how boundary events are recognized
+  post_invalidation_bars: 20 			#Continue following the frozen range for k candles
+  max_bars_from_confirmation: 100 		#Stop observing a range after k candles
+  boundary_tolerance_atr: 0.05 			#A candle can count as touching a boundary when it comes within k ATR
+  minimum_break_atr: 0.0			#A close is considered outside as soon as it passes k ATR from the boundary
+  consecutive_outside_closes: [2, 3]		#Generate events for Kx consecutive closes outside TODO:(Reevaluate)
+  retest_tolerance_atr: 0.10		        #A breakout pullback within k ATR of the old boundary qualifies as a retest.
+
+outcomes: #controls what happens-after measurements are calculated.
+  horizons: [1, 2, 3, 5, 10, 20]
+  excursion_horizon: 20
+  r_levels: [0.5, 1.0, 1.5, 2.0]
+  range_width_levels: [0.25, 0.5, 1.0, 2.0]
+  risk_atr: 1.0
+  intrabar_policy: conservative
+
+costs:   #defines trading costs
+  spread_price: 0.0
+  slippage_price: 0.0
+  commission_price_round_trip: 0.0
+  stress_multipliers: [1.0, 1.5, 2.0]

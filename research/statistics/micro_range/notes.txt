@@ -1,0 +1,9 @@
+STRATEGY: Frozen Range Boundaries
+
+Initially, I'll begin by trying to measure the unconditional behavior of every event:
+What happens after an upper-bound close?
+How often does it continue versus re-enter?
+What is long/short MFE and MAE?
+How does behavior vary by holding horizon?
+How often does the midpoint or opposite boundary get reached?
+My goal is to find whether the raw events contain any usable structure.

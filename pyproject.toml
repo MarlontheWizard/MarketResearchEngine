@@ -1,0 +1,28 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "market-statistics-engine"
+version = "0.1.0"
+description = "Market statistics for MarketBehaviorEngine output(s)"
+requires-python = ">=3.11"
+dependencies = [
+  "numpy>=1.26",
+  "pandas>=2.1",
+  "pyarrow>=14",
+  "PyYAML>=6.0",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8.0"]
+
+[project.scripts]
+sde-statistics = "statistics.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["statistics"]
+
+[tool.pytest.ini_options]
+pythonpath = ["micro_range"]
+testpaths = ["tests"]

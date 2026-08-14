@@ -144,6 +144,9 @@ class MicroRangeStatProcessor: #Builds range events and future outcome measureme
         prior_outside: str | None = None
         
         breakout_side: str | None = None
+       
+        breakout_idx: int | None = None
+
         
         for idx in range(start, end + 1):
             
@@ -185,7 +188,11 @@ class MicroRangeStatProcessor: #Builds range events and future outcome measureme
                 
                 prior_outside = "UPPER"
                 
-                breakout_side = "UPPER"
+                if breakout_side != "UPPER":
+                
+                    breakout_side = "UPPER"
+                    
+                    breakout_idx = idx
             
             elif below:
                 
@@ -193,27 +200,42 @@ class MicroRangeStatProcessor: #Builds range events and future outcome measureme
                 
                 prior_outside = "LOWER"
                 
-                breakout_side = "LOWER"
+                if breakout_side != "LOWER":
+  
+                    breakout_side = "LOWER"
+                    	
+                    breakout_idx = idx
             
             elif lower <= close <= upper and prior_outside:
                 
                 candidates.append((f"REENTRY_FROM_{prior_outside}", prior_outside))
                 
                 prior_outside = None
+                
+                breakout_side = None
+                
+                breakout_idx = None
+                
             
             retest_tolerance = ec.retest_tolerance_atr * atr
             
-            if breakout_side == "UPPER" and low <= upper + retest_tolerance and close >= upper:
+            if breakout_side == "UPPER" and breakout_idx is not None and idx > breakout_idx and low <= upper + retest_tolerance and close >= upper:
                 
                 candidates.append(("UPPER_BREAKOUT_RETEST_HOLD", "UPPER"))
                 
                 breakout_side = None
+                
+                breakout_idx = None
             
-            elif breakout_side == "LOWER" and high >= lower - retest_tolerance and close <= lower:
+            elif breakout_side == "LOWER" and breakout_idx is not None and idx > breakout_idx and high >= lower - retest_tolerance and close <= lower:
                 
                 candidates.append(("LOWER_BREAKOUT_RETEST_HOLD", "LOWER"))
                 
                 breakout_side = None
+                
+                breakout_idx = None
+                
+                
             
             for count in ec.consecutive_outside_closes:
                 

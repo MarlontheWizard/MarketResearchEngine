@@ -16,10 +16,10 @@ from .data_processor import prepare_frame
 
 @dataclass
 class MicroRangeStatResult: confirmed_ranges: pd.DataFrame
-    		    	       boundary_events: pd.DataFrame
-    	            	       event_outcomes: pd.DataFrame
-    		    	       event_summary: pd.DataFrame
-    	            	       validation_report: pd.DataFrame
+    		    	    boundary_events: pd.DataFrame
+    	            	    event_outcomes: pd.DataFrame
+    		    	    event_summary: pd.DataFrame
+    	            	    validation_report: pd.DataFrame
 
 
     def write(self, output_dir: str | Path) -> None:
@@ -56,7 +56,7 @@ class MicroRangeStatProcessor: #Builds range events and future outcome measureme
         return MicroRangeStatResult(ranges, events, outcomes, summary, validation)
 
 
-    def _discover(self, df: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
+    def discover(self, df: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
         
         c, ec = self.config.columns, 
                 self.config.events
@@ -123,7 +123,7 @@ class MicroRangeStatProcessor: #Builds range events and future outcome measureme
 
 
 
-    def _scan_boundary_events(self, 
+    def scan_boundary_events(self, 
                               df: pd.DataFrame, 
                               events: list[dict[str, Any]], 
                               range_id: int,
@@ -234,3 +234,322 @@ class MicroRangeStatProcessor: #Builds range events and future outcome measureme
                     self._append_event(events, df, range_id, confirm_idx, idx, kind, side, upper, lower, atr, invalid_idx)
                     
                     seen.add(kind)
+                    
+    def append_event(self, 
+    	              events: list[dict[str, Any]], 
+    	              df: pd.DataFrame, 
+    	              range_id: int,
+                      confirm_idx: int, 
+                      event_idx: int, 
+                      event_type: str, 
+                      boundary_side: str,
+                      upper: float, 
+                      lower: float, 
+                      atr: float, 
+                      invalid_idx: int | None) -> None:
+                      
+        c = self.config.columns
+        execution_idx = event_idx + 1
+        events.append({
+            "event_id": len(events) + 1, "range_id": range_id, "event_type": event_type,
+            "boundary_side": boundary_side, "confirmation_idx": confirm_idx, "event_idx": event_idx,
+            "event_timestamp": df.at[event_idx, c.timestamp], "execution_idx": execution_idx,
+            "execution_timestamp": df.at[execution_idx, c.timestamp] if execution_idx < len(df) else pd.NaT,
+            "phase": "POST_INVALIDATION" if invalid_idx is not None and event_idx >= invalid_idx else "ACTIVE_RANGE",
+            "upper": upper, "lower": lower, "midpoint": (upper + lower) / 2.0,
+            "range_width": upper - lower, "confirmation_atr": atr,
+            "event_open": df.at[event_idx, c.open], "event_high": df.at[event_idx, c.high],
+            "event_low": df.at[event_idx, c.low], "event_close": df.at[event_idx, c.close],
+            "bars_since_confirmation": event_idx - confirm_idx,
+        })
+
+
+    def measure_outcomes(self, df: pd.DataFrame, events: pd.DataFrame) -> pd.DataFrame:
+       	
+       	if events.empty:
+            
+            return pd.DataFrame()
+        
+        rows: list[dict[str, Any]] = []
+        
+        for event in events.to_dict("records"):
+            
+            entry_idx = int(event["execution_idx"])
+            
+            if entry_idx >= len(df):
+                continue
+            
+            for direction in ("LONG", "SHORT"):
+                rows.append(self._measure_one(df, event, entry_idx, direction))
+        
+        return pd.DataFrame(rows)
+
+
+    def measure_one(self, 
+    	             df: pd.DataFrame, 
+    	             event: dict[str, Any], 
+    	             entry_idx: int, direction: str) -> dict[str, Any]: c, oc, costs = self.config.columns, self.config.outcomes, self.config.costs
+        
+        sign = 1.0 if direction == "LONG" else -1.0
+        
+        entry = float(df.at[entry_idx, c.open])
+          
+        atr = max(float(event["confirmation_atr"]), np.finfo(float).eps)
+        
+        width = max(float(event["range_width"]), np.finfo(float).eps)
+        
+        end = min(len(df) - 1, entry_idx + oc.excursion_horizon - 1)
+        
+        path = df.iloc[entry_idx:end + 1]
+        
+        highs = path[c.high].astype(float).to_numpy()
+        
+        lows = path[c.low].astype(float).to_numpy()
+        
+        closes = path[c.close].astype(float).to_numpy()
+        
+        favorable = highs - entry if direction == "LONG" else entry - lows
+        
+        adverse = entry - lows if direction == "LONG" else highs - entry
+        
+        mfe_i, mae_i = int(np.argmax(favorable)), int(np.argmax(adverse))
+        
+        result = dict(event)
+        
+        result.update({"direction": direction, "entry_idx": entry_idx,
+            	       "entry_timestamp": df.at[entry_idx, c.timestamp], "entry_price": entry,
+            	       "mfe_price": float(favorable[mfe_i]), "mae_price": float(adverse[mae_i]),
+                       "mfe_atr": float(favorable[mfe_i] / atr), "mae_atr": float(adverse[mae_i] / atr),
+                       "mfe_range_width": float(favorable[mfe_i] / width), "mae_range_width": float(adverse[mae_i] / width),
+                       "bars_to_mfe": mfe_i + 1, "bars_to_mae": mae_i + 1,
+                       "path_efficiency": _path_efficiency(closes, entry, sign),
+                       "favorable_to_adverse_ratio": float(favorable[mfe_i] / max(adverse[mae_i], np.finfo(float).eps)),
+                       "outside_upper_close_share": float(np.mean(closes > event["upper"])),
+                       "outside_lower_close_share": float(np.mean(closes < event["lower"])),
+                       "inside_close_share": float(np.mean((closes >= event["lower"]) & (closes <= event["upper"]))),
+        })
+        
+        for horizon in oc.horizons:
+            
+            target_idx = entry_idx + horizon - 1
+            
+            if target_idx < len(df):
+                
+                raw = sign * (float(df.at[target_idx, c.close]) - entry)
+                
+                result[f"return_{horizon}b_price"] = raw
+                
+                result[f"return_{horizon}b_atr"] = raw / atr
+                
+                for multiplier in costs.stress_multipliers:
+                    
+                    label = str(multiplier).replace(".", "p")
+                    
+                    result[f"return_{horizon}b_net_cost_x{label}"] = raw - costs.round_trip_price * multiplier
+        
+        risk = oc.risk_atr * atr
+        
+        result.update(self._first_passage(highs, lows, entry, sign, risk, event))
+        
+        result["ambiguous_bars"] = self._ambiguous_count(highs, lows, entry, sign, risk)
+        
+        return result
+
+    
+    def first_passage(self, 
+    		       highs: np.ndarray, 
+    		       lows: np.ndarray, 
+    		       entry: float, 
+    		       sign: float,
+                       risk: float, 
+                       event: dict[str, Any]) -> dict[str, Any]:
+        
+        
+        result: dict[str, Any] = {}
+        
+        for level in self.config.outcomes.r_levels:
+            
+            favorable_level = entry + sign * level * risk
+            
+            adverse_level = entry - sign * level * risk
+            
+            fav = _first_hit(highs, lows, favorable_level, sign, favorable=True)
+            
+            adv = _first_hit(highs, lows, adverse_level, sign, favorable=False)
+            
+            key = str(level).replace(".", "p")
+            
+            result[f"first_plus_{key}r_bar"] = fav
+            
+            result[f"first_minus_{key}r_bar"] = adv
+            
+            result[f"plus_before_minus_{key}r"] = _ordered(fav, adv, self.config.outcomes.intrabar_policy)
+        
+        for level in self.config.outcomes.range_width_levels:
+            
+            favorable_level = entry + sign * level * float(event["range_width"])
+            
+            key = str(level).replace(".", "p")
+            
+            result[f"first_plus_{key}_range_width_bar"] = _first_hit(highs, lows, favorable_level, sign, favorable=True)
+            
+        for name, price in (("midpoint", event["midpoint"]), ("upper", event["upper"]), ("lower", event["lower"])):
+            
+            result[f"first_{name}_touch_bar"] = _first_level_touch(highs, lows, float(price))
+        
+        return result
+
+
+    def ambiguous_count(self, highs: np.ndarray, lows: np.ndarray, entry: float, sign: float, risk: float) -> int:
+       
+        target, stop = entry + sign * risk, entry - sign * risk
+        
+        return int(np.sum((highs >= max(target, stop)) & (lows <= min(target, stop))))
+
+
+    def invalidation_kind(self, row: pd.Series, upper: float, lower: float, atr: float) -> str:
+        
+        c, threshold = self.config.columns, self.config.events.minimum_break_atr * atr
+        
+        close, high, low = float(row[c.close]), float(row[c.high]), float(row[c.low])
+        
+        if close > upper + threshold:
+            return "INVALIDATION_BREAK_UP"
+        
+        if close < lower - threshold:
+            return "INVALIDATION_BREAK_DOWN"
+        
+        if high > upper and close <= upper:
+            return "INVALIDATION_WICK_UP"
+        
+        if low < lower and close >= lower:
+            return "INVALIDATION_WICK_DOWN"
+        
+        if lower <= close <= upper:
+            
+            return "INVALIDATION_INSIDE_DECAY"
+        
+        return "INVALIDATION_AMBIGUOUS"
+
+   
+    def validate_lifecycle(self, df: pd.DataFrame) -> pd.DataFrame:
+        
+        c = self.config.columns
+        
+        issues: list[dict[str, Any]] = []
+        
+        confirmations = np.flatnonzero(df[c.confirmed_now].to_numpy())
+        
+        for idx in confirmations:
+            
+            if idx + 1 >= len(df) or not bool(df.at[idx + 1, c.first_tradable_now]):
+                
+                issues.append({"severity": "ERROR", "row": int(idx), "issue": "confirmation_not_followed_by_first_tradable"})
+            
+            upper, lower = df.at[idx, c.confirmed_upper], df.at[idx, c.confirmed_lower]
+            
+            if pd.isna(upper) or pd.isna(lower) or float(upper) <= float(lower):
+                
+                issues.append({"severity": "ERROR", "row": int(idx), "issue": "invalid_confirmed_boundaries"})
+        
+        if not issues:
+            
+            issues.append({"severity": "INFO", "row": pd.NA, "issue": "no_lifecycle_issues_found"})
+        
+        return pd.DataFrame(issues)
+
+    @staticmethod
+    def summarize(outcomes: pd.DataFrame) -> pd.DataFrame:
+        
+        if outcomes.empty:
+            
+            return pd.DataFrame()
+        
+        metric_cols = [name for name in outcomes if name.startswith("return_") and (name.endswith("_atr") or "net_cost" in name)]
+        
+        metric_cols += ["mfe_atr", "mae_atr", "path_efficiency", "favorable_to_adverse_ratio", "inside_close_share"]
+        
+        grouped = outcomes.groupby(["event_type", "phase", "direction"], dropna=False)
+        
+        summary = grouped[metric_cols].agg(["count", "mean", "median"])
+        
+        summary.columns = [f"{metric}_{stat}" for metric, stat in summary.columns]
+        
+        return summary.reset_index()
+
+#---------------------------------------------------------------------------------------------------------------------------------------------------
+
+def finite_or(value: Any, fallback: float) -> float:
+    
+    try:
+    
+        number = float(value)
+        
+        return number if np.isfinite(number) and number > 0 else float(fallback)
+    
+    except (TypeError, ValueError):
+        
+        return float(fallback)
+
+
+def side_from_kind(kind: str) -> str:
+    
+    if "UP" in kind:
+        
+        return "UPPER"
+    
+    if "DOWN" in kind:
+        
+        return "LOWER"
+    
+    return "NONE"
+
+
+def path_efficiency(closes: np.ndarray, entry: float, sign: float) -> float:
+    
+    if not len(closes):
+        
+        return np.nan
+    
+    travel = abs(closes[0] - entry) + np.abs(np.diff(closes)).sum()
+    
+    return float(sign * (closes[-1] - entry) / max(travel, np.finfo(float).eps))
+
+
+def first_hit(highs: np.ndarray, lows: np.ndarray, level: float, sign: float, favorable: bool) -> int | None:
+    
+    use_high = (sign > 0) == favorable
+    
+    hits = np.flatnonzero(highs >= level) if use_high else np.flatnonzero(lows <= level)
+    
+    return int(hits[0] + 1) if len(hits) else None
+
+
+def first_level_touch(highs: np.ndarray, lows: np.ndarray, level: float) -> int | None:
+    
+    hits = np.flatnonzero((highs >= level) & (lows <= level))
+    
+    return int(hits[0] + 1) if len(hits) else None
+
+
+def ordered(first: int | None, second: int | None, policy: str) -> bool | None:
+    
+    if first is None:
+        return False
+    
+    if second is None:
+        return True
+    
+    if first < second:
+        return True
+    
+    if first > second:
+        return False
+    
+    if policy == "optimistic":
+        return True
+    
+    if policy == "conservative":
+        return False
+    
+    return None

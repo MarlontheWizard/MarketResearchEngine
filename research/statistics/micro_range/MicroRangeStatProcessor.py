@@ -15,11 +15,12 @@ from .data_processor import prepare_frame
 
 
 @dataclass
-class MicroRangeStatResult: confirmed_ranges: pd.DataFrame
-    		    	    boundary_events: pd.DataFrame
-    	            	    event_outcomes: pd.DataFrame
-    		    	    event_summary: pd.DataFrame
-    	            	    validation_report: pd.DataFrame
+class MicroRangeStatResult: 
+    confirmed_ranges: pd.DataFrame
+    boundary_events: pd.DataFrame
+    event_outcomes: pd.DataFrame
+    event_summary: pd.DataFrame
+    validation_report: pd.DataFrame
 
 
     def write(self, output_dir: str | Path) -> None:
@@ -34,7 +35,7 @@ class MicroRangeStatResult: confirmed_ranges: pd.DataFrame
         self.validation_report.to_csv(output / "validation_report.csv", index=False)
 
 
-class MicroRangeStatProcessor: #Builds range events and future outcome measurements"""
+class MicroRangeStatProcessor: #Builds range events and future outcome measurements
 
     def __init__(self, config: MicroRangeStatConfig | None = None):
         
@@ -58,8 +59,7 @@ class MicroRangeStatProcessor: #Builds range events and future outcome measureme
 
     def discover(self, df: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
         
-        c, ec = self.config.columns, 
-                self.config.events
+        c, ec = self.config.columns, self.config.events
         
         confirmations = np.flatnonzero(df[c.confirmed_now].to_numpy())
         
@@ -108,13 +108,19 @@ class MicroRangeStatProcessor: #Builds range events and future outcome measureme
                 
                 continue
             
-            self.append_event(events, df, range_id, confirm_idx, first_idx, "FIRST_TRADABLE", "NONE", upper, lower, atr, invalid_idx, decision_idx=confirm_idx,execution_idx=first_idx)
-            
-            if invalid_idx is not None:
-                
-                kind = self._invalidation_kind(df.iloc[invalid_idx], upper, lower, atr)
-                
-                self._append_event(events, df, range_id, confirm_idx, invalid_idx, kind, _side_from_kind(kind), upper, lower, atr, invalid_idx)
+            self._append_event(events, 
+                               df, 
+                               range_id, 
+                               confirm_idx, 
+                               first_idx, 
+                               "FIRST_TRADABLE", 
+                               "NONE", 
+                               upper, 
+                               lower, 
+                               atr, 
+                               invalid_idx, 
+                               decision_idx=confirm_idx,
+                               execution_idx=first_idx)
             
             self._scan_boundary_events(df, events, range_id, confirm_idx, first_idx, observation_end, invalid_idx, upper, lower, atr)
        
@@ -123,7 +129,7 @@ class MicroRangeStatProcessor: #Builds range events and future outcome measureme
 
 
 
-    def scan_boundary_events(self, 
+    def _scan_boundary_events(self, 
                               df: pd.DataFrame, 
                               events: list[dict[str, Any]], 
                               range_id: int,
@@ -134,8 +140,7 @@ class MicroRangeStatProcessor: #Builds range events and future outcome measureme
                               upper: float, 
                               lower: float, atr: float) -> None:
                               
-        c, ec = self.config.columns, 
-        	self.config.events
+        c, ec = self.config.columns, self.config.events
         
         seen: set[str] = set()
         
@@ -146,7 +151,22 @@ class MicroRangeStatProcessor: #Builds range events and future outcome measureme
         breakout_side: str | None = None
        
         breakout_idx: int | None = None
+        
+        upper_touch_zone_active = False
+        
+        lower_touch_zone_active = False
 
+        counters = {"upper_touch_count": 0,
+                    "lower_touch_count": 0,
+                    "upper_break_attempt_count": 0,
+                    "lower_break_attempt_count": 0,
+                    "upper_outside_close_count": 0,
+                    "lower_outside_close_count": 0,
+                    "upper_wick_break_count": 0,
+                    "lower_wick_break_count": 0,
+                    "upper_reentry_count": 0,
+                    "lower_reentry_count": 0,
+                   }
         
         for idx in range(start, end + 1):
             
@@ -166,25 +186,42 @@ class MicroRangeStatProcessor: #Builds range events and future outcome measureme
             
             candidates: list[tuple[str, str]] = []
             
-            if high >= upper - tolerance:
+            in_upper_touch_zone = high >= upper - tolerance
+            
+            in_lower_touch_zone = low <= lower + tolerance
+            
+            if in_upper_touch_zone and not upper_touch_zone_active:
                 
+                counters["upper_touch_count"] += 1
                 candidates.append(("UPPER_TOUCH", "UPPER"))
             
-            if low <= lower + tolerance:
+            if in_lower_touch_zone and not lower_touch_zone_active:
                 
+                counters["lower_touch_count"] += 1
                 candidates.append(("LOWER_TOUCH", "LOWER"))
+            
+            upper_touch_zone_active = in_upper_touch_zone
+            lower_touch_zone_active = in_lower_touch_zone
+        
             
             if high > upper and close <= upper:
                 
+                counters["upper_wick_break_count"] += 1 #Wick break counts represent individual rejection candles. Touches represent visits to a zone.
                 candidates.append(("UPPER_WICK_BREAK_CLOSE_INSIDE", "UPPER"))
-            
+            	
             if low < lower and close >= lower:
                 
+                counters["lower_wick_break_count"] += 1
                 candidates.append(("LOWER_WICK_BREAK_CLOSE_INSIDE", "LOWER"))
             
             if above:
                 
-                candidates.append(("CLOSE_ABOVE_UPPER", "UPPER"))
+                counters["upper_outside_close_count"] += 1
+                
+                if above_run == 1:
+                    
+                    counters["upper_break_attempt_count"] += 1                    
+                    candidates.append(("CLOSE_ABOVE_UPPER", "UPPER"))
                 
                 prior_outside = "UPPER"
                 
@@ -196,18 +233,25 @@ class MicroRangeStatProcessor: #Builds range events and future outcome measureme
             
             elif below:
                 
-                candidates.append(("CLOSE_BELOW_LOWER", "LOWER"))
+                counters["lower_outside_close_count"] += 1
+                
+                if below_run == 1:
+                    
+                    counters["lower_break_attempt_count"] += 1
+
+                    candidates.append(("CLOSE_BELOW_LOWER", "LOWER"))
                 
                 prior_outside = "LOWER"
                 
                 if breakout_side != "LOWER":
   
-                    breakout_side = "LOWER"
-                    	
+                    breakout_side = "LOWER" 	
                     breakout_idx = idx
             
             elif lower <= close <= upper and prior_outside:
                 
+                counters[f"{prior_outside.lower()}_reentry_count"] += 1
+                                
                 candidates.append((f"REENTRY_FROM_{prior_outside}", prior_outside))
                 
                 prior_outside = None
@@ -248,19 +292,35 @@ class MicroRangeStatProcessor: #Builds range events and future outcome measureme
                     candidates.append((f"{count}_CLOSES_BELOW_LOWER", "LOWER"))
                     
            
-            #Output first occurrence of each event per range storing repeated touch behavior as counters.
+            if invalid_idx is not None and idx == invalid_idx:
+            
+                invalidation_kind = self._invalidation_kind(row, upper, lower, atr)
+                candidates.append((invalidation_kind, _side_from_kind(invalidation_kind)))
+            
+            
+            repeatable = {
+                "UPPER_TOUCH", "LOWER_TOUCH",
+                "UPPER_WICK_BREAK_CLOSE_INSIDE", "LOWER_WICK_BREAK_CLOSE_INSIDE",
+                "CLOSE_ABOVE_UPPER", "CLOSE_BELOW_LOWER",
+                "REENTRY_FROM_UPPER", "REENTRY_FROM_LOWER"
+            }
+            
+        
+        
+            #Retain every occurrence of repeatable boundary events
+            #Output non repeatable sequence events only once per confirmed range
             for kind, side in candidates:
                 
-                if kind not in seen:
+                if kind in repeatable or kind not in seen:
                     
-                    self._append_event(events, df, range_id, confirm_idx, idx, kind, side, upper, lower, atr, invalid_idx)
+                    self._append_event(events, df, range_id, confirm_idx, idx, kind, side, upper, lower, atr, invalid_idx, counters=counters)
                     
                     seen.add(kind)
                     
-    def append_event(self, 
+    def _append_event(self, 
     	              events: list[dict[str, Any]], 
-    	              df: pd.DataFrame, 
-    	              range_id: int,
+                      df: pd.DataFrame, 
+                      range_id: int,
                       confirm_idx: int, 
                       event_idx: int, 
                       event_type: str, 
@@ -268,16 +328,22 @@ class MicroRangeStatProcessor: #Builds range events and future outcome measureme
                       upper: float, 
                       lower: float, 
                       atr: float, 
-                      invalid_idx: int | None) -> None:
+                      invalid_idx: int | None,
+                      decision_idx: int | None = None, 
+                      execution_idx: int | None = None,
+                      counters: dict[str, int] | None = None) -> None:
                       
         c = self.config.columns
         
         decision_idx = event_idx if decision_idx is None else decision_idx
         execution_idx = event_idx + 1 if execution_idx is None else execution_idx
- 
-        events.append({
+ 	
+        event = {
             "event_id": len(events) + 1, "range_id": range_id, "event_type": event_type,
-            "boundary_side": boundary_side, "confirmation_idx": confirm_idx, "event_idx": event_idx,
+            "boundary_side": boundary_side, "confirmation_idx": confirm_idx,
+            "decision_idx": decision_idx,
+            "decision_timestamp": df.at[decision_idx, c.timestamp],
+            "event_idx": event_idx,
             "event_timestamp": df.at[event_idx, c.timestamp], "execution_idx": execution_idx,
             "execution_timestamp": df.at[execution_idx, c.timestamp] if execution_idx < len(df) else pd.NaT,
             "phase": "POST_INVALIDATION" if invalid_idx is not None and event_idx >= invalid_idx else "ACTIVE_RANGE",
@@ -286,13 +352,29 @@ class MicroRangeStatProcessor: #Builds range events and future outcome measureme
             "event_open": df.at[event_idx, c.open], "event_high": df.at[event_idx, c.high],
             "event_low": df.at[event_idx, c.low], "event_close": df.at[event_idx, c.close],
             "bars_since_confirmation": event_idx - confirm_idx,
+        }
+        event.update({
+            "upper_touch_count": 0,
+            "lower_touch_count": 0,
+            "upper_break_attempt_count": 0,
+            "lower_break_attempt_count": 0,
+            "upper_outside_close_count": 0,
+            "lower_outside_close_count": 0,
+            "upper_wick_break_count": 0,
+            "lower_wick_break_count": 0,
+            "upper_reentry_count": 0,
+            "lower_reentry_count": 0,
         })
+        
+        event.update(counters or {})
+        
+        events.append(event)
 
 
     def measure_outcomes(self, df: pd.DataFrame, events: pd.DataFrame) -> pd.DataFrame:
        	
-       	if events.empty:
-            
+        if events.empty:
+
             return pd.DataFrame()
         
         rows: list[dict[str, Any]] = []
@@ -310,11 +392,16 @@ class MicroRangeStatProcessor: #Builds range events and future outcome measureme
         return pd.DataFrame(rows)
 
 
-    def measure_one(self, 
+    def _measure_one(self, 
     	             df: pd.DataFrame, 
-    	             event: dict[str, Any], 
-    	             entry_idx: int, direction: str) -> dict[str, Any]: c, oc, costs = self.config.columns, self.config.outcomes, self.config.costs
-        
+                     event: dict[str, Any], 
+                     entry_idx: int, 
+                     direction: str) -> dict[str, Any]: 
+    	             
+        c, oc, costs = (self.config.columns, 
+                        self.config.outcomes,
+                        self.config.costs)
+                        
         sign = 1.0 if direction == "LONG" else -1.0
         
         entry = float(df.at[entry_idx, c.open])
@@ -343,7 +430,7 @@ class MicroRangeStatProcessor: #Builds range events and future outcome measureme
         
         result.update({"direction": direction, "entry_idx": entry_idx,
             	       "entry_timestamp": df.at[entry_idx, c.timestamp], "entry_price": entry,
-            	       "mfe_price": float(favorable[mfe_i]), "mae_price": float(adverse[mae_i]),
+                       "mfe_price": float(favorable[mfe_i]), "mae_price": float(adverse[mae_i]),
                        "mfe_atr": float(favorable[mfe_i] / atr), "mae_atr": float(adverse[mae_i] / atr),
                        "mfe_range_width": float(favorable[mfe_i] / width), "mae_range_width": float(adverse[mae_i] / width),
                        "bars_to_mfe": mfe_i + 1, "bars_to_mae": mae_i + 1,
@@ -381,11 +468,11 @@ class MicroRangeStatProcessor: #Builds range events and future outcome measureme
         return result
 
     
-    def first_passage(self, 
+    def _first_passage(self, 
     		       highs: np.ndarray, 
-    		       lows: np.ndarray, 
-    		       entry: float, 
-    		       sign: float,
+                       lows: np.ndarray, 
+                       entry: float, 
+                       sign: float,
                        risk: float, 
                        event: dict[str, Any]) -> dict[str, Any]:
         
@@ -425,14 +512,14 @@ class MicroRangeStatProcessor: #Builds range events and future outcome measureme
         return result
 
 
-    def ambiguous_count(self, highs: np.ndarray, lows: np.ndarray, entry: float, sign: float, risk: float) -> int:
+    def _ambiguous_count(self, highs: np.ndarray, lows: np.ndarray, entry: float, sign: float, risk: float) -> int:
        
         target, stop = entry + sign * risk, entry - sign * risk
         
         return int(np.sum((highs >= max(target, stop)) & (lows <= min(target, stop))))
 
 
-    def invalidation_kind(self, row: pd.Series, upper: float, lower: float, atr: float) -> str:
+    def _invalidation_kind(self, row: pd.Series, upper: float, lower: float, atr: float) -> str:
         
         c, threshold = self.config.columns, self.config.events.minimum_break_atr * atr
         
@@ -504,7 +591,7 @@ class MicroRangeStatProcessor: #Builds range events and future outcome measureme
 
 #---------------------------------------------------------------------------------------------------------------------------------------------------
 
-def finite_or(value: Any, fallback: float) -> float:
+def _finite_or(value: Any, fallback: float) -> float:
     
     try:
     
@@ -517,7 +604,7 @@ def finite_or(value: Any, fallback: float) -> float:
         return float(fallback)
 
 
-def side_from_kind(kind: str) -> str:
+def _side_from_kind(kind: str) -> str:
     
     if "UP" in kind:
         
@@ -530,7 +617,7 @@ def side_from_kind(kind: str) -> str:
     return "NONE"
 
 
-def path_efficiency(closes: np.ndarray, entry: float, sign: float) -> float:
+def _path_efficiency(closes: np.ndarray, entry: float, sign: float) -> float:
     
     if not len(closes):
         
@@ -541,7 +628,7 @@ def path_efficiency(closes: np.ndarray, entry: float, sign: float) -> float:
     return float(sign * (closes[-1] - entry) / max(travel, np.finfo(float).eps))
 
 
-def first_hit(highs: np.ndarray, lows: np.ndarray, level: float, sign: float, favorable: bool) -> int | None:
+def _first_hit(highs: np.ndarray, lows: np.ndarray, level: float, sign: float, favorable: bool) -> int | None:
     
     use_high = (sign > 0) == favorable
     
@@ -550,14 +637,14 @@ def first_hit(highs: np.ndarray, lows: np.ndarray, level: float, sign: float, fa
     return int(hits[0] + 1) if len(hits) else None
 
 
-def first_level_touch(highs: np.ndarray, lows: np.ndarray, level: float) -> int | None:
+def _first_level_touch(highs: np.ndarray, lows: np.ndarray, level: float) -> int | None:
     
     hits = np.flatnonzero((highs >= level) & (lows <= level))
     
     return int(hits[0] + 1) if len(hits) else None
 
 
-def ordered(first: int | None, second: int | None, policy: str) -> bool | None:
+def _ordered(first: int | None, second: int | None, policy: str) -> bool | None:
     
     if first is None:
         return False

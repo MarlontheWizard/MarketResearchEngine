@@ -45,13 +45,13 @@ class MicroRangeStatProcessor: #Builds range events and future outcome measureme
         
         df = prepare_frame(frame, self.config.columns)
         
-        validation = self._validate_lifecycle(df)
+        validation = self.validate_lifecycle(df)
         
-        ranges, events = self._discover(df)
+        ranges, events = self.discover(df)
         
-        outcomes = self._measure_outcomes(df, events)
+        outcomes = self.measure_outcomes(df, events)
         
-        summary = self._summarize(outcomes)
+        summary = self.summarize(outcomes)
         
         return MicroRangeStatResult(ranges, events, outcomes, summary, validation)
 
@@ -108,7 +108,7 @@ class MicroRangeStatProcessor: #Builds range events and future outcome measureme
                 
                 continue
             
-            self._append_event(events, df, range_id, confirm_idx, first_idx, "FIRST_TRADABLE", "NONE", upper, lower, atr, invalid_idx)
+            self.append_event(events, df, range_id, confirm_idx, first_idx, "FIRST_TRADABLE", "NONE", upper, lower, atr, invalid_idx, decision_idx=confirm_idx,execution_idx=first_idx)
             
             if invalid_idx is not None:
                 
@@ -249,7 +249,10 @@ class MicroRangeStatProcessor: #Builds range events and future outcome measureme
                       invalid_idx: int | None) -> None:
                       
         c = self.config.columns
-        execution_idx = event_idx + 1
+        
+        decision_idx = event_idx if decision_idx is None else decision_idx
+        execution_idx = event_idx + 1 if execution_idx is None else execution_idx
+ 
         events.append({
             "event_id": len(events) + 1, "range_id": range_id, "event_type": event_type,
             "boundary_side": boundary_side, "confirmation_idx": confirm_idx, "event_idx": event_idx,

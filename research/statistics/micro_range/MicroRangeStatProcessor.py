@@ -13,7 +13,6 @@ import pandas as pd
 from .config         import MicroRangeStatConfig
 from .data_processor import prepare_frame
 
-
 @dataclass
 class MicroRangeStatResult: 
     confirmed_ranges: pd.DataFrame
@@ -313,7 +312,22 @@ class MicroRangeStatProcessor: #Builds range events and future outcome measureme
                 
                 if kind in repeatable or kind not in seen:
                     
-                    self._append_event(events, df, range_id, confirm_idx, idx, kind, side, upper, lower, atr, invalid_idx, counters=counters)
+                    self._append_event(events, 
+                                       df, range_id,
+                                       confirm_idx, 
+                                       idx, 
+                                       kind, 
+                                       side, 
+                                       upper, 
+                                       lower, 
+                                       atr, 
+                                       invalid_idx, 
+                                       counters=counters,
+                                       breakout_idx=breakout_idx,
+                                       upper_outside_run=above_run,
+                                       lower_outside_run=below_run,
+                                       prior_outside_side=prior_outside,
+                                       breakout_side=breakout_side)
                     
                     seen.add(kind)
                     
@@ -331,7 +345,12 @@ class MicroRangeStatProcessor: #Builds range events and future outcome measureme
                       invalid_idx: int | None,
                       decision_idx: int | None = None, 
                       execution_idx: int | None = None,
-                      counters: dict[str, int] | None = None) -> None:
+                      counters: dict[str, int] | None = None,
+                      breakout_idx: int | None = None,
+                      upper_outside_run: int = 0,
+                      lower_outside_run: int = 0,
+                      prior_outside_side: str | None = None,
+                      breakout_side: str | None = None) -> None:
                       
         c = self.config.columns
         
@@ -339,34 +358,60 @@ class MicroRangeStatProcessor: #Builds range events and future outcome measureme
         execution_idx = event_idx + 1 if execution_idx is None else execution_idx
  	
         event = {
-            "event_id": len(events) + 1, "range_id": range_id, "event_type": event_type,
-            "boundary_side": boundary_side, "confirmation_idx": confirm_idx,
+            "event_id": len(events) + 1,
+            "range_id": range_id,
+            "event_type": event_type,
+            "boundary_side": boundary_side,
+
+            "confirmation_idx": confirm_idx,
+
             "decision_idx": decision_idx,
             "decision_timestamp": df.at[decision_idx, c.timestamp],
+
             "event_idx": event_idx,
-            "event_timestamp": df.at[event_idx, c.timestamp], "execution_idx": execution_idx,
-            "execution_timestamp": df.at[execution_idx, c.timestamp] if execution_idx < len(df) else pd.NaT,
-            "phase": "POST_INVALIDATION" if invalid_idx is not None and event_idx >= invalid_idx else "ACTIVE_RANGE",
-            "upper": upper, "lower": lower, "midpoint": (upper + lower) / 2.0,
-            "range_width": upper - lower, "confirmation_atr": atr,
-            "event_open": df.at[event_idx, c.open], "event_high": df.at[event_idx, c.high],
-            "event_low": df.at[event_idx, c.low], "event_close": df.at[event_idx, c.close],
-            "bars_since_confirmation": event_idx - confirm_idx,
+            "event_timestamp": df.at[event_idx, c.timestamp],
+
+            "execution_idx": execution_idx,
+            "execution_timestamp": (df.at[execution_idx, c.timestamp] if execution_idx < len(df) else pd.NaT),
+
+            "phase": ("POST_INVALIDATION" if invalid_idx is not None and event_idx >= invalid_idx else "ACTIVE_RANGE"),
+
+            "upper": upper,
+            "lower": lower,
+            "midpoint": (upper + lower) / 2.0,
+
+            "confirmation_atr": atr,
+
+            "event_open": df.at[event_idx, c.open],
+            "event_high": df.at[event_idx, c.high],
+            "event_low": df.at[event_idx, c.low],
+            "event_close": df.at[event_idx, c.close],
         }
-        event.update({
-            "upper_touch_count": 0,
-            "lower_touch_count": 0,
-            "upper_break_attempt_count": 0,
-            "lower_break_attempt_count": 0,
-            "upper_outside_close_count": 0,
-            "lower_outside_close_count": 0,
-            "upper_wick_break_count": 0,
-            "lower_wick_break_count": 0,
-            "upper_reentry_count": 0,
-            "lower_reentry_count": 0,
-        })
         
-        event.update(counters or {})
+        relative_features = self._build_event_relative_features(df,
+                                                                confirmation_idx=confirm_idx,
+                                                                first_tradable_idx=confirm_idx + 1,
+                                                                decision_idx=decision_idx,
+                                                                upper=upper,
+                                                                lower=lower,
+                                                                invalidation_idx=invalid_idx,
+                                                                breakout_idx=breakout_idx,
+                                                                counters=counters or {},
+                                                                upper_outside_run=upper_outside_run,
+                                                                lower_outside_run=lower_outside_run,
+                                                                prior_outside_side=prior_outside_side,
+                                                                breakout_side=breakout_side,
+                                                               )
+
+
+        event.update(relative_features)
+            
+        snapshot = self._build_context_snapshot(df,
+                                                confirmation_idx=confirm_idx,
+                                                decision_idx=decision_idx,
+                                               )
+
+        event.update(snapshot)
         
         events.append(event)
 
@@ -902,8 +947,131 @@ class MicroRangeStatProcessor: #Builds range events and future outcome measureme
         
         return summary.reset_index()
 
-#---------------------------------------------------------------------------------------------------------------------------------------------------
+    def _build_event_relative_features(self,
+                                       df: pd.DataFrame,
+                                       *,
+                                       confirmation_idx: int,
+                                       first_tradable_idx: int,
+                                       decision_idx: int,
+                                       upper: float,
+                                       lower: float,
+                                       invalidation_idx: int | None,
+                                       breakout_idx: int | None,
+                                       counters: dict[str, int],
+                                       upper_outside_run: int,
+                                       lower_outside_run: int,
+                                       prior_outside_side: str | None,
+                                       breakout_side: str | None) -> dict[str, Any]:
 
+        
+        c = self.config.columns
+        row = df.iloc[decision_idx]
+        
+        #invalidation is usable only when it has occurred by the
+        #decision candle, this makes a future invalidation unknown.
+        invalidation_known = (invalidation_idx is not None and invalidation_idx <= decision_idx)
+        
+        high = float(row[c.high])
+        low = float(row[c.low])
+        close = float(row[c.close])
+        atr = float(row[c.atr])
+
+        #range-relative
+        range_width = upper - lower
+
+        safe_atr = (atr if np.isfinite(atr) and atr > 0.0 else np.nan)
+
+        safe_width = (range_width if np.isfinite(range_width) and range_width > 0.0 else np.nan)
+
+        relative_features = {"range_width": range_width,
+                             "range_width_atr": range_width / safe_atr,
+
+                             "close_position_in_confirmed_range": (close - lower) / safe_width,
+                             "close_distance_to_upper_atr": (close - upper) / safe_atr,
+                             "close_distance_to_lower_atr": (close - lower) / safe_atr,
+                             "high_distance_to_upper_atr": (high - upper) / safe_atr,
+                             "low_distance_to_lower_atr": (low - lower) / safe_atr}
+
+        default_counters = {"upper_touch_count": 0,
+                            "lower_touch_count": 0,
+                            "upper_break_attempt_count": 0,
+                            "lower_break_attempt_count": 0,
+                            "upper_outside_close_count": 0,
+                            "lower_outside_close_count": 0,
+                            "upper_wick_break_count": 0,
+                            "lower_wick_break_count": 0,
+                            "upper_reentry_count": 0,
+                            "lower_reentry_count": 0,
+                        }
+
+        default_counters.update(counters)
+
+        #add the remaining lifecycle and counter features.
+        relative_features.update({
+            "range_age_bars": decision_idx - confirmation_idx,
+            "bars_since_confirmation": decision_idx - confirmation_idx,
+            "bars_since_first_tradable":     decision_idx - first_tradable_idx if decision_idx >= first_tradable_idx else None,
+
+            "bars_since_invalidation": ( decision_idx - invalidation_idx if invalidation_known else None),
+            "range_is_active": not invalidation_known,
+            "range_was_invalidated": invalidation_known,
+
+            "upper_outside_run": upper_outside_run,
+            "lower_outside_run": lower_outside_run,
+            "prior_outside_side": prior_outside_side,
+            "pending_breakout_side": breakout_side,
+
+            "bars_since_breakout": ( decision_idx - breakout_idx if breakout_idx is not None else None), **default_counters})
+
+        return relative_features
+        
+        
+    def _build_context_snapshot(self, 
+                                df: pd.DataFrame,
+                                *,
+                                confirmation_idx: int,
+                                decision_idx: int) -> dict[str, Any]:
+
+
+        confirmation_row = df.iloc[confirmation_idx]
+        decision_row = df.iloc[decision_idx]
+
+        snapshot: dict[str, Any] = {}
+
+        #save confirmation and decision context (for ai)
+        for column in self.config.snapshots.feature_columns:
+            confirmation_value = confirmation_row[column]
+            decision_value = decision_row[column]
+
+            snapshot[f"confirmation__{column}"] = confirmation_value
+            snapshot[f"decision__{column}"] = decision_value
+
+
+        #target changes only inapproved change columns.
+        for column in self.config.snapshots.change_columns:
+            
+            confirmation_value = confirmation_row[column]
+            
+            decision_value = decision_row[column]
+
+            if pd.isna(confirmation_value) or pd.isna(decision_value):
+                
+                snapshot[f"change__{column}"] = np.nan
+                
+                continue
+
+            try:
+                
+                snapshot[f"change__{column}"] = (float(decision_value) - float(confirmation_value))
+            
+            except (TypeError, ValueError):
+                
+                snapshot[f"change__{column}"] = np.nan
+
+        return snapshot
+        
+#---------------------------------------------------------------------------------------------------------------------------------------------------
+    
 def _finite_or(value: Any, fallback: float) -> float:
     
     try:

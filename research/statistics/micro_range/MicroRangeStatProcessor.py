@@ -544,30 +544,200 @@ class MicroRangeStatProcessor: #Builds range events and future outcome measureme
         return "INVALIDATION_AMBIGUOUS"
 
    
-    def validate_lifecycle(self, df: pd.DataFrame) -> pd.DataFrame:
-        
+    def validate_lifecycle(self,
+                           df: pd.DataFrame) -> pd.DataFrame:
         c = self.config.columns
-        
         issues: list[dict[str, Any]] = []
-        
-        confirmations = np.flatnonzero(df[c.confirmed_now].to_numpy())
-        
-        for idx in confirmations:
-            
-            if idx + 1 >= len(df) or not bool(df.at[idx + 1, c.first_tradable_now]):
+
+        range_is_open = False
+        active_range_confirmation_idx: int | None = None
+        frozen_upper: float | None = None
+        frozen_lower: float | None = None
+
+        def add_issue(severity: str,
+                      row_idx: int,
+                      issue: str) -> None:
+
+            issues.append({"severity": severity,
+                           "row": row_idx,
+                           "timestamp": df.at[row_idx, c.timestamp],
+                           "issue": issue})
+
+
+        for idx in range(len(df)):
+
+            confirmed_now = bool(df.at[idx, c.confirmed_now])
+
+            first_tradable_now = bool(df.at[idx, c.first_tradable_now])
+
+            active_live = bool(df.at[idx, c.active_live])
+
+            invalidated_now = bool(df.at[idx, c.invalidated_now])
+
+            current_upper = df.at[idx, c.confirmed_upper]
+            current_lower = df.at[idx, c.confirmed_lower]
+
+
+            #validate confirmation
+            if confirmed_now:
+
+                if range_is_open:
+                    
+                    add_issue("ERROR",
+                              idx,
+                              "new_confirmation_before_previous_invalidation")
+
+                if (pd.isna(current_upper) or 
+                    pd.isna(current_lower) or 
+                    float(current_upper) <= float(current_lower)):
+                    
+                    add_issue("ERROR",
+                              idx,
+                              "invalid_confirmed_boundaries")
+
+                    frozen_upper = None
+                    
+                    frozen_lower = None
+
+                else:
+                    frozen_upper = float(current_upper)
+                    
+                    frozen_lower = float(current_lower)
+
+                if not active_live:
+                    
+                    add_issue("ERROR",
+                              idx,
+                              "confirmation_not_active_live")
+
+                range_is_open = True
                 
-                issues.append({"severity": "ERROR", "row": int(idx), "issue": "confirmation_not_followed_by_first_tradable"})
-            
-            upper, lower = df.at[idx, c.confirmed_upper], df.at[idx, c.confirmed_lower]
-            
-            if pd.isna(upper) or pd.isna(lower) or float(upper) <= float(lower):
-                
-                issues.append({"severity": "ERROR", "row": int(idx), "issue": "invalid_confirmed_boundaries"})
-        
+                active_range_confirmation_idx = idx
+
+
+            #validate first-tradable shift
+
+            if first_tradable_now:
+
+                if idx == 0:
+                    
+                    add_issue("ERROR",
+                              idx,
+                              "first_tradable_on_first_row")
+
+                elif not bool(df.at[idx - 1, c.confirmed_now]):
+                    
+                    add_issue("ERROR",
+                              idx,
+                              "first_tradable_without_prior_confirmation")
+
+                if not range_is_open:
+                    add_issue("ERROR",
+                              idx,
+                              "first_tradable_without_open_range")
+
+                if not active_live:
+                    add_issue("ERROR",
+                              idx,
+                              "first_tradable_not_active_live")
+
+            if confirmed_now:
+
+                if idx + 1 >= len(df):
+                    
+                    add_issue("WARNING",
+                              idx,
+                              "confirmation_at_end_of_dataset")
+
+                elif not bool(df.at[idx + 1, c.first_tradable_now]):
+                    
+                    add_issue("ERROR",
+                              idx,
+                              "confirmation_not_followed_by_first_tradable")
+
+            #validate active-live state
+            if active_live and not range_is_open:
+
+                add_issue(
+                    "ERROR",
+                    idx,
+                    "active_live_without_open_range",
+                )
+
+            if (
+                range_is_open
+                and not invalidated_now
+                and not active_live
+            ):
+                add_issue(
+                    "ERROR",
+                    idx,
+                    "active_live_dropped_before_invalidation",
+                )
+
+
+            #validate frozen boundaries while range is open
+
+            if (range_is_open
+                and frozen_upper is not None
+                and frozen_lower is not None):
+
+                if not pd.isna(current_upper):
+
+                    if not np.isclose(float(current_upper),
+                        	          frozen_upper,
+                                      rtol=0.0,
+                                      atol=np.finfo(float).eps):
+                        
+                        add_issue("ERROR",
+                                  idx,
+                                  "confirmed_upper_changed_while_active")
+
+                if not pd.isna(current_lower):
+
+                    if not np.isclose(
+                        float(current_lower),
+                        frozen_lower,
+                        rtol=0.0,
+                        atol=np.finfo(float).eps,
+                    ):
+                        add_issue(
+                            "ERROR",
+                            idx,
+                            "confirmed_lower_changed_while_active",
+                        )
+
+
+            #validate invalidation (LOL)
+
+            if invalidated_now:
+
+                if not range_is_open:
+                    add_issue(
+                        "ERROR",
+                        idx,
+                        "invalidation_without_open_range",
+                    )
+
+                # active_live may be either True or False on this exact
+                # candle. The range is considered closed afterward.
+                range_is_open = False
+                active_range_confirmation_idx = None
+                frozen_upper = None
+                frozen_lower = None
+
+
+            #normal result
+
+
         if not issues:
-            
-            issues.append({"severity": "INFO", "row": pd.NA, "issue": "no_lifecycle_issues_found"})
         
+            issues.append({"severity": "INFO",
+                           "row": pd.NA,
+                           "timestamp": pd.NaT,
+                           "issue": "no_lifecycle_issues_found",
+                         })
+
         return pd.DataFrame(issues)
 
     @staticmethod
@@ -584,7 +754,6 @@ class MicroRangeStatProcessor: #Builds range events and future outcome measureme
         grouped = outcomes.groupby(["event_type", "phase", "direction"], dropna=False)
         
         summary = grouped[metric_cols].agg(["count", "mean", "median"])
-        
         summary.columns = [f"{metric}_{stat}" for metric, stat in summary.columns]
         
         return summary.reset_index()

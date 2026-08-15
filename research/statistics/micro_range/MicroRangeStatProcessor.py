@@ -185,6 +185,9 @@ class MicroRangeStatProcessor: #Builds range events and future outcome measureme
             
             candidates: list[tuple[str, str]] = []
             
+            clear_prior_outside_after_events = False
+            clear_breakout_after_events = False
+            
             in_upper_touch_zone = high >= upper - tolerance
             
             in_lower_touch_zone = low <= lower + tolerance
@@ -253,11 +256,8 @@ class MicroRangeStatProcessor: #Builds range events and future outcome measureme
                                 
                 candidates.append((f"REENTRY_FROM_{prior_outside}", prior_outside))
                 
-                prior_outside = None
-                
-                breakout_side = None
-                
-                breakout_idx = None
+                clear_prior_outside_after_events = True
+                clear_breakout_after_events = True
                 
             
             retest_tolerance = ec.retest_tolerance_atr * atr
@@ -265,18 +265,14 @@ class MicroRangeStatProcessor: #Builds range events and future outcome measureme
             if breakout_side == "UPPER" and breakout_idx is not None and idx > breakout_idx and low <= upper + retest_tolerance and close >= upper:
                 
                 candidates.append(("UPPER_BREAKOUT_RETEST_HOLD", "UPPER"))
-                
-                breakout_side = None
-                
-                breakout_idx = None
+
+                clear_breakout_after_events = True
             
             elif breakout_side == "LOWER" and breakout_idx is not None and idx > breakout_idx and high >= lower - retest_tolerance and close <= lower:
                 
                 candidates.append(("LOWER_BREAKOUT_RETEST_HOLD", "LOWER"))
                 
-                breakout_side = None
-                
-                breakout_idx = None
+                clear_breakout_after_events = True
                 
                 
             
@@ -330,6 +326,15 @@ class MicroRangeStatProcessor: #Builds range events and future outcome measureme
                                        breakout_side=breakout_side)
                     
                     seen.add(kind)
+                    
+            if clear_prior_outside_after_events:
+                
+                prior_outside = None
+
+            if clear_breakout_after_events:
+            
+                breakout_side = None
+                breakout_idx = None
                     
     def _append_event(self, 
     	              events: list[dict[str, Any]], 

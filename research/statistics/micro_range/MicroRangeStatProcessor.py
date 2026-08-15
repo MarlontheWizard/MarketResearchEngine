@@ -405,21 +405,64 @@ class MicroRangeStatProcessor: #Builds range events and future outcome measureme
         sign = 1.0 if direction == "LONG" else -1.0
         
         entry = float(df.at[entry_idx, c.open])
-          
+        
+        future_confirmation_positions = np.flatnonzero(df.loc[entry_idx + 1:,
+                                                              c.confirmed_now].to_numpy())
+
+       
+        if len(future_confirmation_positions):
+
+            next_confirmation_idx = (entry_idx + 1
+                                               + int(future_confirmation_positions[0]))
+
+            next_confirmation_timestamp = df.at[next_confirmation_idx,
+                                                c.timestamp]
+
+            bars_until_next_confirmation = (next_confirmation_idx - entry_idx)
+
+        else:
+
+            next_confirmation_idx = None
+            next_confirmation_timestamp = pd.NaT
+            bars_until_next_confirmation = None
+            
         atr = max(float(event["confirmation_atr"]), np.finfo(float).eps)
         
         width = max(float(event["range_width"]), np.finfo(float).eps)
         
-        end = min(len(df) - 1, entry_idx + oc.excursion_horizon - 1)
+        full_end_idx = min(len(df) - 1,
+                           entry_idx + oc.excursion_horizon - 1)
+
+        full_path = df.iloc[entry_idx:full_end_idx + 1]
+
+        if next_confirmation_idx is None:
+
+            censored_end_idx = full_end_idx
+
+        else:
+
+            censored_end_idx = min(
+                full_end_idx,
+                next_confirmation_idx - 1,
+            )
+
+        if censored_end_idx >= entry_idx:
+
+            censored_path = df.iloc[
+                entry_idx:censored_end_idx + 1
+            ]
+
+        else:
+
+            censored_path = df.iloc[0:0]
+            
         
-        path = df.iloc[entry_idx:end + 1]
-        
-        highs = path[c.high].astype(float).to_numpy()
-        
-        lows = path[c.low].astype(float).to_numpy()
-        
-        closes = path[c.close].astype(float).to_numpy()
-        
+        highs = full_path[c.high].astype(float).to_numpy()
+
+        lows = full_path[c.low].astype(float).to_numpy()
+
+        closes = full_path[c.close].astype(float).to_numpy()
+
         favorable = highs - entry if direction == "LONG" else entry - lows
         
         adverse = entry - lows if direction == "LONG" else highs - entry
@@ -439,25 +482,126 @@ class MicroRangeStatProcessor: #Builds range events and future outcome measureme
                        "outside_upper_close_share": float(np.mean(closes > event["upper"])),
                        "outside_lower_close_share": float(np.mean(closes < event["lower"])),
                        "inside_close_share": float(np.mean((closes >= event["lower"]) & (closes <= event["upper"]))),
-        })
+                       "next_confirmation_idx": next_confirmation_idx,
+                        "next_confirmation_timestamp": next_confirmation_timestamp,
+                        "bars_until_next_confirmation": bars_until_next_confirmation,
+                        "outcome_censored_by_next_confirmation": (next_confirmation_idx is not None and next_confirmation_idx <= full_end_idx),
+                        "full_outcome_bars": len(full_path),
+                        "censored_outcome_bars": len(censored_path)})
         
+        
+        if not censored_path.empty:
+
+            censored_highs = censored_path[c.high].astype(float).to_numpy()
+
+            censored_lows = censored_path[c.low].astype(float).to_numpy()
+
+            censored_favorable = np.maximum((censored_highs - entry if direction == "LONG"
+                                                                    else entry - censored_lows), 0.0)
+
+            censored_adverse = np.maximum((entry - censored_lows
+                                           if direction == "LONG"
+                                           else censored_highs - entry), 0.0)
+
+            censored_mfe_idx = int(np.argmax(censored_favorable))
+
+            censored_mae_idx = int(np.argmax(censored_adverse))
+
+            result.update(
+                {
+                    "censored_mfe_price": float(
+                        censored_favorable[
+                            censored_mfe_idx
+                        ]
+                    ),
+                    "censored_mae_price": float(
+                        censored_adverse[
+                            censored_mae_idx
+                        ]
+                    ),
+                    "censored_mfe_atr": float(
+                        censored_favorable[
+                            censored_mfe_idx
+                        ] / atr
+                    ),
+                    "censored_mae_atr": float(
+                        censored_adverse[
+                            censored_mae_idx
+                        ] / atr
+                    ),
+                    "censored_bars_to_mfe":
+                        censored_mfe_idx + 1,
+                    "censored_bars_to_mae":
+                        censored_mae_idx + 1,
+                }
+            )
+
+        else:
+
+            result.update(
+                {
+                    "censored_mfe_price": np.nan,
+                    "censored_mae_price": np.nan,
+                    "censored_mfe_atr": np.nan,
+                    "censored_mae_atr": np.nan,
+                    "censored_bars_to_mfe": pd.NA,
+                    "censored_bars_to_mae": pd.NA,
+                }
+            )
+    
+    
         for horizon in oc.horizons:
             
             target_idx = entry_idx + horizon - 1
-            
-            if target_idx < len(df):
+
+            if target_idx >= len(df):
+
+                result[f"return_{horizon}b_price"] = np.nan
+
+                result[f"return_{horizon}b_atr"] = np.nan
+
+                result[f"return_{horizon}b_censored_price"] = np.nan
+
+                result[f"return_{horizon}b_censored_atr"] = np.nan
                 
-                raw = sign * (float(df.at[target_idx, c.close]) - entry)
-                
-                result[f"return_{horizon}b_price"] = raw
-                
-                result[f"return_{horizon}b_atr"] = raw / atr
                 
                 for multiplier in costs.stress_multipliers:
-                    
+
                     label = str(multiplier).replace(".", "p")
-                    
-                    result[f"return_{horizon}b_net_cost_x{label}"] = raw - costs.round_trip_price * multiplier
+
+                    result[f"return_{horizon}b_net_cost_x{label}"] = np.nan
+
+                continue
+
+
+            raw = sign * (float(df.at[target_idx, c.close])- entry)
+
+            #full outcome
+            result[f"return_{horizon}b_price"] = raw
+
+            result[f"return_{horizon}b_atr"] = raw / atr
+
+            for multiplier in costs.stress_multipliers:
+
+                label = str(multiplier).replace(".","p",)
+
+                result[f"return_{horizon}b_net_cost_x{label}"] = (raw - costs.round_trip_price * multiplier)
+
+            #censored at the next confirmation
+            available_before_next_confirmation = (next_confirmation_idx is None or target_idx < next_confirmation_idx)
+
+            if available_before_next_confirmation:
+
+                result[f"return_{horizon}b_censored_price"] = raw
+
+                result[f"return_{horizon}b_censored_atr"] = raw / atr
+
+            else:
+
+                result[f"return_{horizon}b_censored_price"] = np.nan
+
+                result[f"return_{horizon}b_censored_atr"] = np.nan
+        
         
         risk = oc.risk_atr * atr
         

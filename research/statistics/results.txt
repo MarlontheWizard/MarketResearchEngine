@@ -1,0 +1,33 @@
+-------------------------------------------------------------------------------------
+What survived across all three periods:
+CLOSE_ABOVE_UPPER / ACTIVE_RANGE → SHORTTRAIN: +0.321 ATR
+VALIDATION: +0.628 ATR
+TEST: +0.233 ATR
+consistent in terms of direction but my samples are only 14, 14, and 8.
+
+What did not remain stable:
+FIRST_TRADABLE → LONG weakened from +0.192 to +0.051, then became -0.074 ATR.
+LOWER_WICK     → LONG worked in TRAIN/VALIDATION but reversed in TEST.
+UPPER_WICK     → SHORT worked strongly in TRAIN/VALIDATION but reversed in TEST.
+LOWER_TOUCH changed direction.
+UPPER_TOUCH    → SHORT improved after TRAIN, but the TRAIN mean was negative.
+-------------------------------------------------------------------------------------
+Most promising hypotheses:
+CLOSE_ABOVE_UPPER / ACTIVE_RANGE → SHORT
+Mean: +0.421 ATR
+Median: +0.553 ATR
+Win rate: 72.2%
+This hints that active-range upside breaks often fade.
+
+UPPER_WICK_BREAK_CLOSE_INSIDE / ACTIVE_RANGE → SHORT
+Mean: +0.239 ATR
+Win rate: 56.9%
+This is consistent with rejection at the upper boundary.
+
+UPPER_TOUCH / ACTIVE_RANGE → SHORT
+Mean: +0.068 ATR
+Median: +0.290 ATR
+Win rate: 58.0%
+
+These three results tell a story based on consistency: while a range remains active, interaction with its upper boundary has historically favored fading downward.
+-------------------------------------------------------------------------------------

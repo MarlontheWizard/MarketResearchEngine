@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pandas as pd
 
-from .config import ColumnConfig
+from .micro_range.config import ColumnConfig
 
 #Join context and confirmation data together
 def load_and_join(context_path: str | Path, lifecycle_path: str | Path | None, columns: ColumnConfig) -> pd.DataFrame:
@@ -26,11 +26,26 @@ def load_and_join(context_path: str | Path, lifecycle_path: str | Path | None, c
         raise ValueError(f"Both inputs must contain {timestamp!r}")
     
     lifecycle_only = [name for name in lifecycle.columns if name == timestamp or name not in context.columns]
+
+
+    timestamp = columns.timestamp
+
+    context[timestamp] = pd.to_datetime(context[timestamp],
+                                        errors="raise",
+                                        utc=True,
+                                       )
+
+    lifecycle[timestamp] = pd.to_datetime(lifecycle[timestamp],
+                                      errors="raise",
+                                      utc=True,
+                                     )
+
     merged = context.merge(lifecycle[lifecycle_only], on=timestamp, how="inner", validate="one_to_one")
     
-    if len(merged) != len(lifecycle):
-        
-        raise ValueError("[ERROR] CONTEXT AND LIFECYCLE TIMESTAMPS DO NOT ALIGN 1:1")
+    if len(merged) != len(context) or len(merged) != len(lifecycle):
+        raise ValueError("[ERROR] CONTEXT AND LIFECYCLE TIMESTAMPS "
+                         "DO NOT ALIGN 1:1"
+                        )
     
     return prepare_frame(merged, columns)
 
@@ -38,8 +53,8 @@ def load_and_join(context_path: str | Path, lifecycle_path: str | Path | None, c
 def prepare_frame(frame: pd.DataFrame, columns: ColumnConfig) -> pd.DataFrame:
     
     required = [columns.timestamp, columns.open, columns.high, columns.low, columns.close,
-        	columns.confirmed_now, columns.first_tradable_now, columns.active_live,
-        	columns.invalidated_now, columns.confirmed_upper, columns.confirmed_lower
+                columns.atr, columns.confirmed_now, columns.first_tradable_now, columns.active_live,
+        	    columns.invalidated_now, columns.confirmed_upper, columns.confirmed_lower
                ]
     
     missing = [name for name in required if name not in frame]
@@ -61,17 +76,12 @@ def prepare_frame(frame: pd.DataFrame, columns: ColumnConfig) -> pd.DataFrame:
     for name in (columns.confirmed_now, columns.first_tradable_now, columns.active_live, columns.invalidated_now):
         
         result[name] = result[name].fillna(False).astype(bool)
-        
-    if columns.atr not in result:
-        
-        result[columns.atr] = pd.NA
-    
-    
+     
     return result
 
 
 
-def read_table(path: str | Path) -> pd.DataFrame:
+def _read_table(path: str | Path) -> pd.DataFrame:
     
     path = Path(path)
     

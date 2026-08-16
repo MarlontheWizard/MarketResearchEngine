@@ -379,7 +379,7 @@ class MicroRangeStatProcessor: #Builds range events and future outcome measureme
             "execution_idx": execution_idx,
             "execution_timestamp": (df.at[execution_idx, c.timestamp] if execution_idx < len(df) else pd.NaT),
 
-            "phase": ("POST_INVALIDATION" if invalid_idx is not None and event_idx >= invalid_idx else "ACTIVE_RANGE"),
+            "phase": ("POST_INVALIDATION" if invalid_idx is not None and decision_idx >= invalid_idx else "ACTIVE_RANGE"),
 
             "upper": upper,
             "lower": lower,

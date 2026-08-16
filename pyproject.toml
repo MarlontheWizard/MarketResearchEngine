@@ -18,11 +18,12 @@ dependencies = [
 dev = ["pytest>=8.0"]
 
 [project.scripts]
-sde-statistics = "statistics.cli:main"
+sde-statistics = "research.statistics.micro_range.cli:main"
 
 [tool.setuptools.packages.find]
-where = ["statistics"]
+where = ["."]
+include = ["research*"]
 
 [tool.pytest.ini_options]
-pythonpath = ["micro_range"]
-testpaths = ["tests"]
+pythonpath = ["."]
+#testpaths = ["tests"]

@@ -11,7 +11,7 @@ import numpy as np
 import pandas as pd
 
 from .config         import MicroRangeStatConfig
-from .data_processor import prepare_frame
+from ..market_data_processing import prepare_frame
 
 @dataclass
 class MicroRangeStatResult: 

@@ -830,10 +830,12 @@ class MicroRangeStatProcessor: #Builds range events and future outcome measureme
                               idx,
                               "first_tradable_without_open_range")
 
-                if not active_live:
-                    add_issue("ERROR",
-                              idx,
-                              "first_tradable_not_active_live")
+                #the first-tradable candle may invalidate the range by its close.
+                #in that case it was tradable at the open even though active_live
+                #is False after processing the completed candle
+                if not active_live and not invalidated_now:
+                
+                    add_issue("ERROR", idx, "first_tradable_not_active_live_or_invalidated")
 
             if confirmed_now:
 
